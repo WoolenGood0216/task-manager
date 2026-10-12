@@ -155,7 +155,7 @@ export default function Home() {
         <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-sm font-semibold text-indigo-600">
-              TASKSPACE
+              NEXORA
             </p>
             <h1 className="mt-1 text-3xl font-bold tracking-tight">
               Manajemen Tugas
