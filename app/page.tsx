@@ -3,8 +3,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Status = "Belum dimulai" | "Dikerjakan" | "Selesai";
+type Status = "Belum dikerjakan" | "Sedang dikerjakan" | "Selesai";
 type Priority = "Rendah" | "Sedang" | "Tinggi";
+
+type TaskLink = {
+  id: string;
+  name: string;
+  url: string;
+};
 
 type Task = {
   id: string;
@@ -16,548 +22,713 @@ type Task = {
   createdAt: number;
   category?: string;
   url?: string;
+  links?: TaskLink[];
 };
 
-const statuses: Status[] = ["Belum dimulai", "Dikerjakan", "Selesai"];
-const priorities: Priority[] = ["Rendah", "Sedang", "Tinggi"];
-const categories = ["Sekolah", "Proyek", "Pribadi", "Lainnya"];
-
-const priorityColors: Record<Priority, string> = {
-  Rendah: "bg-slate-100 text-slate-700",
-  Sedang: "bg-amber-100 text-amber-800",
-  Tinggi: "bg-rose-100 text-rose-800",
+type TaskForm = {
+  title: string;
+  description: string;
+  status: Status;
+  priority: Priority;
+  dueDate: string;
+  category: string;
 };
 
-const emptyForm = {
+const STORAGE_KEY = "task-manager-v1";
+const THEME_KEY = "task-manager-dark";
+
+const STATUSES: Status[] = [
+  "Belum dikerjakan",
+  "Sedang dikerjakan",
+  "Selesai",
+];
+
+const PRIORITIES: Priority[] = ["Rendah", "Sedang", "Tinggi"];
+
+const EMPTY_FORM: TaskForm = {
   title: "",
   description: "",
-  status: "Belum dimulai" as Status,
-  priority: "Sedang" as Priority,
+  status: "Belum dikerjakan",
+  priority: "Sedang",
   dueDate: "",
-  category: "Pribadi",
-  url: "",
+  category: "",
 };
 
-function validUrl(value: string): boolean {
-  if (!value.trim()) return true;
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
+function isValidStatus(value: unknown): value is Status {
+  return STATUSES.includes(value as Status);
+}
+
+function isValidPriority(value: unknown): value is Priority {
+  return PRIORITIES.includes(value as Priority);
+}
+
+function validUrl(value: string) {
   try {
-    const url = new URL(value.trim());
-    return url.protocol === "https:" || url.protocol === "http:";
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
   } catch {
     return false;
   }
 }
 
-function todayLocal(): string {
-  const now = new Date();
-  const offset = now.getTimezoneOffset() * 60000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+function normalizeTask(value: unknown): Task | null {
+  if (!value || typeof value !== "object") return null;
+
+  const item = value as Record<string, unknown>;
+
+  if (
+    typeof item.id !== "string" ||
+    typeof item.title !== "string" ||
+    typeof item.description !== "string" ||
+    !isValidStatus(item.status) ||
+    !isValidPriority(item.priority) ||
+    typeof item.dueDate !== "string"
+  ) {
+    return null;
+  }
+
+  const links: TaskLink[] = Array.isArray(item.links)
+    ? item.links
+        .filter(
+          (link): link is Record<string, unknown> =>
+            !!link && typeof link === "object"
+        )
+        .filter(
+          (link) =>
+            typeof link.id === "string" &&
+            typeof link.name === "string" &&
+            typeof link.url === "string" &&
+            validUrl(link.url)
+        )
+        .map((link) => ({
+          id: link.id as string,
+          name: link.name as string,
+          url: link.url as string,
+        }))
+    : [];
+
+  // Memindahkan tautan lama ke format banyak tautan.
+  if (links.length === 0 && typeof item.url === "string" && validUrl(item.url)) {
+    links.push({
+      id: createId(),
+      name: "Tautan referensi",
+      url: item.url,
+    });
+  }
+
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    status: item.status,
+    priority: item.priority,
+    dueDate: item.dueDate,
+    createdAt:
+      typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+    category: typeof item.category === "string" ? item.category : "",
+    url: "",
+    links,
+  };
 }
 
-function isTask(value: unknown): value is Task {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Partial<Task>;
+function statusColor(status: Status) {
+  if (status === "Selesai") {
+    return "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300";
+  }
 
-  return (
-    typeof item.id === "string" &&
-    typeof item.title === "string" &&
-    typeof item.description === "string" &&
-    statuses.includes(item.status as Status) &&
-    priorities.includes(item.priority as Priority) &&
-    typeof item.dueDate === "string" &&
-    typeof item.createdAt === "number" &&
-    (item.url === undefined || typeof item.url === "string") &&
-    (item.category === undefined || typeof item.category === "string")
-  );
+  if (status === "Sedang dikerjakan") {
+    return "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300";
+  }
+
+  return "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200";
+}
+
+function priorityColor(priority: Priority) {
+  if (priority === "Tinggi") {
+    return "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300";
+  }
+
+  if (priority === "Sedang") {
+    return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300";
+  }
+
+  return "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300";
 }
 
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [ready, setReady] = useState(false);
-  const [form, setForm] = useState(emptyForm);
+  const [loaded, setLoaded] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("Semua");
+  const [priorityFilter, setPriorityFilter] = useState("Semua");
+  const [sortBy, setSortBy] = useState("Terbaru");
+
+  const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("Semua");
-  const [categoryFilter, setCategoryFilter] = useState("Semua");
-  const [sort, setSort] = useState("Tenggat");
-  const [showForm, setShowForm] = useState(false);
-  const [dark, setDark] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [importKey, setImportKey] = useState(0);
+  const [form, setForm] = useState<TaskForm>(EMPTY_FORM);
+
+  const [links, setLinks] = useState<TaskLink[]>([]);
+  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkError, setLinkError] = useState("");
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("task-manager-v1");
+      const saved = localStorage.getItem(STORAGE_KEY);
+
       if (saved) {
         const parsed: unknown = JSON.parse(saved);
+
         if (Array.isArray(parsed)) {
-          setTasks(parsed.filter(isTask).map((task) => ({
-            ...task,
-            category: task.category || "Pribadi",
-            url: task.url || "",
-          })));
+          setTasks(
+            parsed
+              .map(normalizeTask)
+              .filter((task): task is Task => task !== null)
+          );
         }
       }
 
-      setDark(localStorage.getItem("task-manager-dark") === "true");
+      setDarkMode(localStorage.getItem(THEME_KEY) === "true");
     } catch {
-      setNotice("Data lokal tidak dapat dibaca.");
+      console.error("Gagal membaca data tugas dari browser.");
+    } finally {
+      setLoaded(true);
     }
-
-    setReady(true);
   }, []);
 
   useEffect(() => {
-    if (ready) {
-      localStorage.setItem("task-manager-v1", JSON.stringify(tasks));
+    if (loaded) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
     }
-  }, [tasks, ready]);
+  }, [tasks, loaded]);
 
   useEffect(() => {
-    if (ready) {
-      localStorage.setItem("task-manager-dark", String(dark));
-    }
-  }, [dark, ready]);
+    document.documentElement.classList.toggle("dark", darkMode);
 
-  const completed = tasks.filter((t) => t.status === "Selesai").length;
-  const active = tasks.length - completed;
-  const overdue = tasks.filter(
-    (t) => t.status !== "Selesai" && t.dueDate && t.dueDate < todayLocal()
+    if (loaded) {
+      localStorage.setItem(THEME_KEY, String(darkMode));
+    }
+  }, [darkMode, loaded]);
+
+  const completed = tasks.filter((task) => task.status === "Selesai").length;
+  const inProgress = tasks.filter(
+    (task) => task.status === "Sedang dikerjakan"
   ).length;
+  const pending = tasks.filter(
+    (task) => task.status === "Belum dikerjakan"
+  ).length;
+
   const progress = tasks.length
     ? Math.round((completed / tasks.length) * 100)
     : 0;
 
+  const overdue = tasks.filter(
+    (task) =>
+      task.dueDate &&
+      task.dueDate < new Date().toISOString().slice(0, 10) &&
+      task.status !== "Selesai"
+  ).length;
+
   const filteredTasks = useMemo(() => {
-    const result = tasks.filter((t) => {
-      const matchesQuery =
-        `${t.title} ${t.description} ${t.category || ""}`
-          .toLowerCase()
-          .includes(query.toLowerCase());
+    const result = tasks.filter((task) => {
+      const keyword = search.toLowerCase();
 
-      return (
-        matchesQuery &&
-        (filter === "Semua" || t.status === filter) &&
-        (categoryFilter === "Semua" ||
-          (t.category || "Pribadi") === categoryFilter)
-      );
+      const matchesSearch =
+        task.title.toLowerCase().includes(keyword) ||
+        task.description.toLowerCase().includes(keyword) ||
+        (task.category ?? "").toLowerCase().includes(keyword) ||
+        (task.links ?? []).some(
+          (link) =>
+            link.name.toLowerCase().includes(keyword) ||
+            link.url.toLowerCase().includes(keyword)
+        );
+
+      const matchesStatus =
+        statusFilter === "Semua" || task.status === statusFilter;
+
+      const matchesPriority =
+        priorityFilter === "Semua" || task.priority === priorityFilter;
+
+      return matchesSearch && matchesStatus && matchesPriority;
     });
 
-    return result.sort((a, b) => {
-      if (sort === "Prioritas") {
-        const rank = { Tinggi: 0, Sedang: 1, Rendah: 2 };
-        return rank[a.priority] - rank[b.priority];
+    result.sort((a, b) => {
+      if (sortBy === "Tenggat terdekat") {
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return a.dueDate.localeCompare(b.dueDate);
       }
 
-      if (sort === "Terbaru") return b.createdAt - a.createdAt;
-
-      if (sort === "Tenggat") {
-        if (a.dueDate && b.dueDate) {
-          return a.dueDate.localeCompare(b.dueDate);
-        }
-        if (a.dueDate) return -1;
-        if (b.dueDate) return 1;
+      if (sortBy === "Prioritas tertinggi") {
+        const rank = { Tinggi: 3, Sedang: 2, Rendah: 1 };
+        return rank[b.priority] - rank[a.priority];
       }
 
-      return Number(a.status === "Selesai") -
-        Number(b.status === "Selesai");
+      if (sortBy === "Judul A-Z") {
+        return a.title.localeCompare(b.title);
+      }
+
+      return b.createdAt - a.createdAt;
     });
-  }, [tasks, query, filter, categoryFilter, sort]);
+
+    return result;
+  }, [tasks, search, statusFilter, priorityFilter, sortBy]);
 
   function openCreate() {
     setEditingId(null);
-    setForm(emptyForm);
-    setShowForm(true);
+    setForm(EMPTY_FORM);
+    setLinks([]);
+    setLinkName("");
+    setLinkUrl("");
+    setLinkError("");
+    setModalOpen(true);
   }
 
   function openEdit(task: Task) {
     setEditingId(task.id);
+
     setForm({
       title: task.title,
       description: task.description,
       status: task.status,
       priority: task.priority,
       dueDate: task.dueDate,
-      category: task.category || "Pribadi",
-      url: task.url || "",
+      category: task.category ?? "",
     });
-    setShowForm(true);
+
+    setLinks(
+      task.links?.length
+        ? task.links.map((link) => ({ ...link }))
+        : task.url && validUrl(task.url)
+          ? [
+              {
+                id: createId(),
+                name: "Tautan referensi",
+                url: task.url,
+              },
+            ]
+          : []
+    );
+
+    setLinkName("");
+    setLinkUrl("");
+    setLinkError("");
+    setModalOpen(true);
   }
 
-  function saveTask(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  function addLink() {
+    const name = linkName.trim();
+    const url = linkUrl.trim();
 
-    const title = form.title.trim();
-    const url = form.url.trim();
-
-    if (!title) return;
-
-    if (!validUrl(url)) {
-      setNotice("Tautan harus menggunakan http:// atau https://");
+    if (!name) {
+      setLinkError("Masukkan nama tautan terlebih dahulu.");
       return;
     }
 
-    if (editingId) {
-      setTasks((current) =>
-        current.map((t) =>
-          t.id === editingId
-            ? { ...t, ...form, title, url }
-            : t
-        )
-      );
-      setNotice("Tugas berhasil diperbarui.");
-    } else {
-      const task: Task = {
-        ...form,
-        title,
-        url,
-        id: crypto.randomUUID(),
-        createdAt: Date.now(),
-      };
-
-      setTasks((current) => [task, ...current]);
-      setNotice("Tugas berhasil ditambahkan.");
+    if (!validUrl(url)) {
+      setLinkError("URL harus valid dan diawali http:// atau https://.");
+      return;
     }
 
-    setShowForm(false);
-    setEditingId(null);
-    setForm(emptyForm);
+    setLinks((current) => [...current, { id: createId(), name, url }]);
+    setLinkName("");
+    setLinkUrl("");
+    setLinkError("");
+  }
+
+  function removeLink(id: string) {
+    setLinks((current) => current.filter((link) => link.id !== id));
+  }
+
+  function saveTask(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const title = form.title.trim();
+
+    if (!title) return;
+
+    if (editingId) {
+      setTasks((current) =>
+        current.map((task) =>
+          task.id === editingId
+            ? {
+                ...task,
+                ...form,
+                title,
+                url: "",
+                links: links.map((link) => ({ ...link })),
+              }
+            : task
+        )
+      );
+    } else {
+      const newTask: Task = {
+        id: createId(),
+        ...form,
+        title,
+        createdAt: Date.now(),
+        url: "",
+        links: links.map((link) => ({ ...link })),
+      };
+
+      setTasks((current) => [newTask, ...current]);
+    }
+
+    setModalOpen(false);
   }
 
   function deleteTask(id: string) {
-    if (window.confirm("Yakin ingin menghapus tugas ini?")) {
-      setTasks((current) => current.filter((t) => t.id !== id));
-      setNotice("Tugas telah dihapus.");
-    }
-  }
-
-  function changeStatus(id: string, status: Status) {
-    setTasks((current) =>
-      current.map((t) => (t.id === id ? { ...t, status } : t))
-    );
+    if (!window.confirm("Yakin ingin menghapus tugas ini?")) return;
+    setTasks((current) => current.filter((task) => task.id !== id));
   }
 
   function exportTasks() {
     const blob = new Blob([JSON.stringify(tasks, null, 2)], {
       type: "application/json",
     });
+
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "nexora-task-manager-backup.json";
-    a.click();
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "nexora-task-backup.json";
+    anchor.click();
     URL.revokeObjectURL(url);
-    setNotice("Backup tugas berhasil dibuat.");
   }
 
-  async function importTasks(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  function importTasks(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
     if (!file) return;
 
-    try {
-      const parsed: unknown = JSON.parse(await file.text());
+    const reader = new FileReader();
 
-      if (!Array.isArray(parsed) || !parsed.every(isTask)) {
-        throw new Error("Format tidak sesuai");
+    reader.onload = () => {
+      try {
+        const parsed: unknown = JSON.parse(String(reader.result));
+
+        if (!Array.isArray(parsed)) {
+          throw new Error("Format cadangan harus berupa array JSON.");
+        }
+
+        const imported = parsed
+          .map(normalizeTask)
+          .filter((task): task is Task => task !== null);
+
+        if (imported.length === 0 && parsed.length > 0) {
+          throw new Error("Tidak ada data tugas yang valid di file.");
+        }
+
+        if (
+          window.confirm(
+            `Impor ${imported.length} tugas? Data tugas saat ini akan diganti.`
+          )
+        ) {
+          setTasks(imported);
+          alert("Cadangan berhasil diimpor.");
+        }
+      } catch (error) {
+        alert(
+          error instanceof Error
+            ? `Gagal mengimpor: ${error.message}`
+            : "File JSON tidak valid."
+        );
       }
 
-      const normalized: Task[] = parsed.map((t) => ({
-        ...t,
-        category: t.category || "Pribadi",
-        url: t.url || "",
-      }));
+      event.target.value = "";
+    };
 
-      if (
-        window.confirm(
-          `Impor ${normalized.length} tugas? Daftar tugas saat ini akan diganti.`
-        )
-      ) {
-        setTasks(normalized);
-        setNotice("Backup berhasil dipulihkan.");
-      }
-    } catch {
-      setNotice("File backup tidak valid.");
-    } finally {
-      setImportKey((key) => key + 1);
-    }
+    reader.onerror = () => {
+      alert("File tidak dapat dibaca.");
+      event.target.value = "";
+    };
+
+    reader.readAsText(file);
   }
 
-  const bg = dark
-    ? "bg-slate-950 text-slate-100"
-    : "bg-slate-50 text-slate-900";
-  const panel = dark
-    ? "border-slate-800 bg-slate-900"
-    : "border-slate-200 bg-white";
-  const muted = dark ? "text-slate-400" : "text-slate-500";
-  const inputStyle = `mt-2 w-full rounded-xl border ${
-    dark
-      ? "border-slate-700 bg-slate-800 text-white"
-      : "border-slate-200 bg-white text-slate-900"
-  } px-3 py-3 outline-none focus:border-indigo-500`;
+  if (!loaded) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 text-gray-700 dark:bg-gray-950 dark:text-gray-200">
+        Memuat NEXORA Task Manager...
+      </main>
+    );
+  }
 
   return (
-    <main className={`min-h-screen transition-colors ${bg}`}>
-      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-        <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
+    <main className="min-h-screen bg-gray-50 text-gray-900 transition-colors dark:bg-gray-950 dark:text-gray-100">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
-            <p className="text-sm font-bold tracking-widest text-indigo-500">
+            <p className="mb-2 text-sm font-semibold uppercase tracking-[0.2em] text-blue-600 dark:text-blue-400">
               NEXORA
             </p>
-            <h1 className="mt-1 text-3xl font-bold tracking-tight">
+            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
               Task Manager
             </h1>
-            <p className={`mt-2 text-sm ${muted}`}>
-              Atur tugas, tenggat, dan referensi dalam satu tempat.
+            <p className="mt-2 text-gray-600 dark:text-gray-400">
+              Atur tugas, pantau progres, dan simpan semua referensi dalam satu tempat.
             </p>
           </div>
 
           <div className="flex flex-wrap gap-2">
             <button
-              onClick={() => setDark(!dark)}
-              className={`rounded-xl border px-3 py-2 ${
-                dark ? "border-slate-700" : "border-slate-200"
-              }`}
+              onClick={() => setDarkMode((value) => !value)}
+              className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
             >
-              {dark ? "☀️ Terang" : "🌙 Gelap"}
+              {darkMode ? "☀️ Mode terang" : "🌙 Mode gelap"}
             </button>
+
             <button
               onClick={exportTasks}
-              className={`rounded-xl border px-3 py-2 ${
-                dark ? "border-slate-700" : "border-slate-200"
-              }`}
+              className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
             >
-              Ekspor
+              Ekspor JSON
             </button>
-            <label className={`cursor-pointer rounded-xl border px-3 py-2 ${
-              dark ? "border-slate-700" : "border-slate-200"
-            }`}>
-              Impor
+
+            <label className="cursor-pointer rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800">
+              Impor JSON
               <input
-                key={importKey}
                 type="file"
                 accept=".json,application/json"
                 onChange={importTasks}
                 className="hidden"
               />
             </label>
+
             <button
               onClick={openCreate}
-              className="rounded-xl bg-indigo-600 px-4 py-2 font-semibold text-white hover:bg-indigo-700"
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
             >
-              + Tambah Tugas
+              + Tambah tugas
             </button>
           </div>
         </header>
 
-        {notice && (
-          <div
-            role="status"
-            className={`mb-5 flex items-center justify-between rounded-xl border p-3 text-sm ${panel}`}
-          >
-            <span>{notice}</span>
-            <button
-              onClick={() => setNotice("")}
-              aria-label="Tutup notifikasi"
-              className="ml-3 font-bold"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[
-            { label: "Total tugas", value: tasks.length, icon: "📋" },
-            { label: "Belum selesai", value: active, icon: "⏳" },
-            { label: "Terlambat", value: overdue, icon: "⚠️" },
-            { label: "Selesai", value: `${completed} (${progress}%)`, icon: "✅" },
+            { label: "Total tugas", value: tasks.length },
+            { label: "Belum dikerjakan", value: pending },
+            { label: "Sedang dikerjakan", value: inProgress },
+            { label: "Selesai", value: completed },
           ].map((item) => (
-            <div key={item.label} className={`rounded-2xl border p-5 shadow-sm ${panel}`}>
-              <div className="flex items-center justify-between">
-                <p className={`text-sm ${muted}`}>{item.label}</p>
-                <span>{item.icon}</span>
-              </div>
-              <p className="mt-3 text-3xl font-bold">{item.value}</p>
+            <div
+              key={item.label}
+              className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900"
+            >
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                {item.label}
+              </p>
+              <p className="mt-2 text-3xl font-bold">{item.value}</p>
             </div>
           ))}
         </section>
 
-        <section className={`mt-6 rounded-2xl border p-5 shadow-sm ${panel}`}>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="font-bold">Progres keseluruhan</h2>
-              <p className={`mt-1 text-sm ${muted}`}>
-                {completed} dari {tasks.length} tugas selesai
-              </p>
-            </div>
-            <span className="font-bold text-indigo-500">{progress}%</span>
+        <section className="mb-8 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold">Progres keseluruhan</h2>
+            <span className="text-sm font-semibold text-blue-600 dark:text-blue-400">
+              {progress}%
+            </span>
           </div>
-          <div className={`mt-4 h-3 overflow-hidden rounded-full ${
-            dark ? "bg-slate-800" : "bg-slate-100"
-          }`}>
+
+          <div
+            className="h-3 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800"
+            role="progressbar"
+            aria-valuenow={progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
             <div
-              className="h-full rounded-full bg-indigo-600 transition-all"
+              className="h-full rounded-full bg-blue-600 transition-all"
               style={{ width: `${progress}%` }}
             />
           </div>
+
+          <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+            {overdue > 0
+              ? `${overdue} tugas melewati tenggat waktu.`
+              : "Tidak ada tugas yang melewati tenggat waktu."}
+          </p>
         </section>
 
-        <section className="mt-8">
-          <div className="mb-5">
-            <h2 className="text-xl font-bold">Daftar Tugas</h2>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Cari tugas atau kategori..."
-                aria-label="Cari tugas"
-                className={`rounded-xl border px-4 py-3 outline-none focus:border-indigo-500 ${
-                  dark ? "border-slate-700 bg-slate-900" : "border-slate-200 bg-white"
-                }`}
-              />
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                aria-label="Filter kategori"
-                className={`rounded-xl border px-3 py-3 ${
-                  dark ? "border-slate-700 bg-slate-900" : "border-slate-200 bg-white"
-                }`}
-              >
-                <option value="Semua">Semua kategori</option>
-                {categories.map((c) => <option key={c}>{c}</option>)}
-              </select>
-              <select
-                value={sort}
-                onChange={(e) => setSort(e.target.value)}
-                aria-label="Urutkan tugas"
-                className={`rounded-xl border px-3 py-3 ${
-                  dark ? "border-slate-700 bg-slate-900" : "border-slate-200 bg-white"
-                }`}
-              >
-                <option>Tenggat</option>
-                <option>Prioritas</option>
-                <option>Terbaru</option>
-              </select>
-            </div>
-          </div>
+        <section className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Cari judul, kategori, atau tautan..."
+            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900"
+          />
 
-          <div className="mb-5 flex flex-wrap gap-2">
-            {["Semua", ...statuses].map((s) => (
-              <button
-                key={s}
-                onClick={() => setFilter(s)}
-                className={`rounded-full px-4 py-2 text-sm font-medium ${
-                  filter === s
-                    ? "bg-indigo-600 text-white"
-                    : `border ${dark ? "border-slate-700" : "border-slate-200"}`
-                }`}
-              >
-                {s}
-              </button>
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900"
+          >
+            <option value="Semua">Semua status</option>
+            {STATUSES.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
             ))}
+          </select>
+
+          <select
+            value={priorityFilter}
+            onChange={(event) => setPriorityFilter(event.target.value)}
+            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900"
+          >
+            <option value="Semua">Semua prioritas</option>
+            {PRIORITIES.map((priority) => (
+              <option key={priority} value={priority}>
+                Prioritas {priority}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value)}
+            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900"
+          >
+            <option>Terbaru</option>
+            <option>Tenggat terdekat</option>
+            <option>Prioritas tertinggi</option>
+            <option>Judul A-Z</option>
+          </select>
+        </section>
+
+        <section>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xl font-bold">Daftar tugas</h2>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              {filteredTasks.length} tugas
+            </span>
           </div>
 
-          {!ready ? (
-            <p className={`py-12 text-center ${muted}`}>Memuat tugas...</p>
-          ) : filteredTasks.length === 0 ? (
-            <div className={`rounded-2xl border border-dashed p-12 text-center ${panel}`}>
-              <p className="text-3xl">📝</p>
-              <h3 className="mt-3 font-semibold">Belum ada tugas</h3>
-              <p className={`mt-1 text-sm ${muted}`}>
-                Tambahkan tugas pertama untuk memulai.
+          {filteredTasks.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-300 px-5 py-16 text-center dark:border-gray-700">
+              <p className="text-lg font-semibold">Belum ada tugas yang cocok</p>
+              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                Tambahkan tugas baru atau ubah filter pencarian.
               </p>
-              <button onClick={openCreate} className="mt-4 font-semibold text-indigo-500">
-                + Buat tugas baru
-              </button>
+              {tasks.length === 0 && (
+                <button
+                  onClick={openCreate}
+                  className="mt-5 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                >
+                  Buat tugas pertama
+                </button>
+              )}
             </div>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               {filteredTasks.map((task) => {
-                const isOverdue =
-                  task.status !== "Selesai" &&
-                  task.dueDate !== "" &&
-                  task.dueDate < todayLocal();
+                const taskLinks =
+                  task.links?.length
+                    ? task.links
+                    : task.url && validUrl(task.url)
+                      ? [
+                          {
+                            id: "legacy-link",
+                            name: "Tautan referensi",
+                            url: task.url,
+                          },
+                        ]
+                      : [];
 
                 return (
                   <article
                     key={task.id}
-                    className={`rounded-2xl border p-5 shadow-sm ${panel}`}
+                    className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900"
                   >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <h3 className={`break-words text-lg font-bold ${
-                          task.status === "Selesai" ? "text-slate-400 line-through" : ""
-                        }`}>
-                          {task.title}
-                        </h3>
-                        <p className={`mt-1 text-xs ${muted}`}>
-                          {task.category || "Pribadi"}
-                        </p>
-                      </div>
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${priorityColors[task.priority]}`}>
-                        {task.priority}
+                    <div className="flex flex-wrap gap-2">
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${statusColor(task.status)}`}
+                      >
+                        {task.status}
                       </span>
-                    </div>
 
-                    {task.description && (
-                      <p className={`mt-3 whitespace-pre-wrap break-words text-sm ${muted}`}>
-                        {task.description}
-                      </p>
-                    )}
-
-                    <div className={`mt-4 flex flex-wrap gap-x-3 gap-y-2 text-xs ${muted}`}>
-                      <span>
-                        📅 {task.dueDate || "Tanpa tenggat"}
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-semibold ${priorityColor(task.priority)}`}
+                      >
+                        Prioritas {task.priority}
                       </span>
-                      {isOverdue && (
-                        <span className="font-semibold text-rose-500">
-                          Terlambat
+
+                      {task.category && (
+                        <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-semibold text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
+                          {task.category}
                         </span>
                       )}
                     </div>
 
-                    {task.url && validUrl(task.url) && (
-                      <a
-                        href={task.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        referrerPolicy="no-referrer"
-                        className="mt-4 flex items-center gap-2 break-all rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
-                      >
-                        <span aria-hidden="true">🔗</span>
-                        <span className="min-w-0 flex-1">
-                          Buka tautan referensi
-                          <span className="mt-1 block break-all text-xs font-normal">
-                            {task.url}
-                          </span>
-                        </span>
-                        <span aria-hidden="true">↗</span>
-                      </a>
+                    <h3 className="mt-4 break-words text-lg font-bold">
+                      {task.title}
+                    </h3>
+
+                    {task.description && (
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-gray-600 dark:text-gray-400">
+                        {task.description}
+                      </p>
                     )}
 
-                    <div className={`mt-5 flex flex-wrap items-center gap-2 border-t pt-4 ${
-                      dark ? "border-slate-800" : "border-slate-100"
-                    }`}>
-                      <select
-                        aria-label={`Status ${task.title}`}
-                        value={task.status}
-                        onChange={(e) => changeStatus(task.id, e.target.value as Status)}
-                        className={`min-w-0 flex-1 rounded-lg border px-2 py-2 text-sm ${
-                          dark ? "border-slate-700 bg-slate-800" : "border-slate-200 bg-white"
-                        }`}
-                      >
-                        {statuses.map((s) => <option key={s}>{s}</option>)}
-                      </select>
+                    <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-sm text-gray-500 dark:text-gray-400">
+                      {task.dueDate && (
+                        <span>
+                          📅 Tenggat:{" "}
+                          {new Date(
+                            `${task.dueDate}T00:00:00`
+                          ).toLocaleDateString("id-ID", {
+                            day: "numeric",
+                            month: "long",
+                            year: "numeric",
+                          })}
+                        </span>
+                      )}
+
+                      <span>🔗 {taskLinks.length} tautan</span>
+                    </div>
+
+                    {taskLinks.length > 0 && (
+                      <div className="mt-4 rounded-xl bg-gray-50 p-3 dark:bg-gray-800/70">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Tautan referensi
+                        </p>
+
+                        <ul className="space-y-2">
+                          {taskLinks.map((link) => (
+                            <li key={link.id} className="break-all text-sm">
+                              <a
+                                href={link.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-blue-600 hover:underline dark:text-blue-400"
+                              >
+                                ↗ {link.name}
+                              </a>
+                              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                                {link.url}
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="mt-5 flex flex-wrap gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
                       <button
                         onClick={() => openEdit(task)}
-                        className="rounded-lg border border-slate-300 px-3 py-2 text-sm hover:bg-slate-100 hover:text-slate-900"
+                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
                       >
                         Edit
                       </button>
+
                       <button
                         onClick={() => deleteTask(task.id)}
-                        className="rounded-lg px-3 py-2 text-sm text-rose-500 hover:bg-rose-50"
+                        className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950"
                       >
                         Hapus
                       </button>
@@ -569,127 +740,233 @@ export default function Home() {
           )}
         </section>
 
-        {showForm && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/60 p-4"
-            onMouseDown={(e) => {
-              if (e.target === e.currentTarget) setShowForm(false);
-            }}
-          >
-            <form
-              onSubmit={saveTask}
-              className={`my-auto w-full max-w-lg rounded-2xl border p-6 shadow-xl ${panel}`}
-            >
+        <footer className="mt-12 border-t border-gray-200 py-6 text-center text-sm text-gray-500 dark:border-gray-800 dark:text-gray-400">
+          NEXORA Task Manager · Data disimpan di browser perangkat ini.
+        </footer>
+      </div>
+
+      {modalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 py-8"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setModalOpen(false);
+            }
+          }}
+        >
+          <div className="my-auto w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-900">
+            <div className="mb-6 flex items-center justify-between gap-3">
               <h2 className="text-xl font-bold">
-                {editingId ? "Edit Tugas" : "Tambah Tugas"}
+                {editingId ? "Edit tugas" : "Tambah tugas"}
               </h2>
 
-              <label className="mt-5 block text-sm font-medium">
-                Nama tugas *
+              <button
+                type="button"
+                onClick={() => setModalOpen(false)}
+                className="rounded-lg px-3 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
+                aria-label="Tutup"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={saveTask} className="space-y-5">
+              <div>
+                <label className="mb-2 block text-sm font-medium">
+                  Judul tugas *
+                </label>
                 <input
-                  autoFocus
                   required
-                  maxLength={120}
+                  autoFocus
+                  maxLength={150}
                   value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  placeholder="Contoh: Belajar jaringan komputer"
-                  className={inputStyle}
+                  onChange={(event) =>
+                    setForm({ ...form, title: event.target.value })
+                  }
+                  placeholder="Contoh: Membuat website NEXORA"
+                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
                 />
-              </label>
-
-              <label className="mt-4 block text-sm font-medium">
-                Deskripsi
-                <textarea
-                  rows={3}
-                  maxLength={2000}
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder="Detail tugas..."
-                  className={inputStyle}
-                />
-              </label>
-
-              <label className="mt-4 block text-sm font-medium">
-                Tautan referensi (opsional)
-                <input
-                  type="url"
-                  maxLength={2048}
-                  value={form.url}
-                  onChange={(e) => setForm({ ...form, url: e.target.value })}
-                  placeholder="https://example.com"
-                  className={inputStyle}
-                />
-                <span className={`mt-1 block text-xs ${muted}`}>
-                  Masukkan URL lengkap, termasuk https://
-                </span>
-              </label>
-
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <label className="text-sm font-medium">
-                  Prioritas
-                  <select
-                    value={form.priority}
-                    onChange={(e) => setForm({ ...form, priority: e.target.value as Priority })}
-                    className={inputStyle}
-                  >
-                    {priorities.map((p) => <option key={p}>{p}</option>)}
-                  </select>
-                </label>
-
-                <label className="text-sm font-medium">
-                  Status
-                  <select
-                    value={form.status}
-                    onChange={(e) => setForm({ ...form, status: e.target.value as Status })}
-                    className={inputStyle}
-                  >
-                    {statuses.map((s) => <option key={s}>{s}</option>)}
-                  </select>
-                </label>
               </div>
 
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <label className="text-sm font-medium">
-                  Kategori
-                  <select
-                    value={form.category}
-                    onChange={(e) => setForm({ ...form, category: e.target.value })}
-                    className={inputStyle}
-                  >
-                    {categories.map((c) => <option key={c}>{c}</option>)}
-                  </select>
+              <div>
+                <label className="mb-2 block text-sm font-medium">
+                  Deskripsi
                 </label>
+                <textarea
+                  rows={3}
+                  maxLength={3000}
+                  value={form.description}
+                  onChange={(event) =>
+                    setForm({ ...form, description: event.target.value })
+                  }
+                  placeholder="Detail tugas atau catatan..."
+                  className="w-full resize-y rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                />
+              </div>
 
-                <label className="text-sm font-medium">
-                  Tenggat waktu
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Status
+                  </label>
+                  <select
+                    value={form.status}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        status: event.target.value as Status,
+                      })
+                    }
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
+                  >
+                    {STATUSES.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Prioritas
+                  </label>
+                  <select
+                    value={form.priority}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        priority: event.target.value as Priority,
+                      })
+                    }
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
+                  >
+                    {PRIORITIES.map((priority) => (
+                      <option key={priority} value={priority}>
+                        {priority}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Kategori
+                  </label>
+                  <input
+                    maxLength={60}
+                    value={form.category}
+                    onChange={(event) =>
+                      setForm({ ...form, category: event.target.value })
+                    }
+                    placeholder="Contoh: Sekolah, Coding"
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium">
+                    Tenggat waktu
+                  </label>
                   <input
                     type="date"
                     value={form.dueDate}
-                    onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
-                    className={inputStyle}
+                    onChange={(event) =>
+                      setForm({ ...form, dueDate: event.target.value })
+                    }
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
                   />
-                </label>
+                </div>
               </div>
 
-              <div className="mt-6 flex justify-end gap-3">
+              <div className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+                <div className="mb-4">
+                  <h3 className="font-semibold">Tautan referensi</h3>
+                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    Tambahkan beberapa tautan, misalnya GitHub, dokumentasi,
+                    video, atau sumber belajar.
+                  </p>
+                </div>
+
+                {links.length > 0 && (
+                  <ul className="mb-4 space-y-3">
+                    {links.map((link) => (
+                      <li
+                        key={link.id}
+                        className="flex min-w-0 items-start justify-between gap-3 rounded-lg bg-gray-50 p-3 dark:bg-gray-800"
+                      >
+                        <div className="min-w-0">
+                          <p className="break-words text-sm font-semibold">
+                            {link.name}
+                          </p>
+                          <p className="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">
+                            {link.url}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => removeLink(link.id)}
+                          className="shrink-0 rounded-lg px-2 py-1 text-sm font-medium text-red-600 hover:bg-red-100 dark:hover:bg-red-950"
+                        >
+                          Hapus
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="space-y-3">
+                  <input
+                    value={linkName}
+                    onChange={(event) => setLinkName(event.target.value)}
+                    placeholder="Nama tautan, misalnya GitHub"
+                    maxLength={100}
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-950"
+                  />
+
+                  <input
+                    type="url"
+                    value={linkUrl}
+                    onChange={(event) => setLinkUrl(event.target.value)}
+                    placeholder="https://github.com/..."
+                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-950"
+                  />
+
+                  {linkError && (
+                    <p className="text-sm text-red-600">{linkError}</p>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={addLink}
+                    className="w-full rounded-xl border border-blue-300 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
+                  >
+                    + Tambahkan tautan
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
                 <button
                   type="button"
-                  onClick={() => setShowForm(false)}
-                  className="rounded-xl border border-slate-300 px-4 py-3"
+                  onClick={() => setModalOpen(false)}
+                  className="rounded-xl border border-gray-300 px-5 py-3 text-sm font-semibold hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
                 >
                   Batal
                 </button>
+
                 <button
                   type="submit"
-                  className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white hover:bg-indigo-700"
+                  className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
                 >
-                  Simpan Tugas
+                  {editingId ? "Simpan perubahan" : "Simpan tugas"}
                 </button>
               </div>
             </form>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </main>
   );
 }
