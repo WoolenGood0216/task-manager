@@ -1,38 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Tugas Manager v3
 
-## Getting Started
+Versi gabungan untuk tugas pribadi, sekolah, dan proyek; tersedia tampilan daftar, papan ala Kanban, kalender, statistik, subtugas, catatan, banyak tautan bernama, ekspor/impor JSON, dark mode, dan sinkronisasi Supabase opsional.
 
-First, run the development server:
+## File yang diganti / ditambahkan
+
+- `app/page.tsx` — halaman utama (pengganti penuh).
+- `app/globals.css` — stylesheet responsif (gunakan sebagai pengganti penuh jika proyek lama mengimpor file ini).
+- `supabase/schema.sql` — tabel, Row Level Security, dan aturan akses lampiran.
+- `.env.example` — contoh environment variable.
+
+## 1. Pasang dependensi
+
+Di folder proyek:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install @supabase/supabase-js
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Gunakan versi Next.js yang sudah dipatch dan kompatibel dengan proyek Anda. Jika dashboard Vercel memberi peringatan kerentanan, ikuti versi perbaikan yang direkomendasikan Vercel/Next.js, lalu uji build sebelum deploy.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 2. Pasang kode
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Cadangkan proyek terlebih dahulu.
+2. Ganti isi `app/page.tsx` dengan file dari paket ini.
+3. Ganti isi `app/globals.css` dengan file dari paket ini. Jika proyek Anda memakai Tailwind v3, ubah baris pertama menjadi `@tailwind base; @tailwind components; @tailwind utilities;` alih-alih `@import "tailwindcss";`.
+4. Pastikan `app/layout.tsx` mengimpor `./globals.css`.
+5. Pastikan `app/layout.tsx` memiliki `<html lang="id">` dan `<body>{children}</body>`.
 
-## Learn More
+## 3. Mode lokal
 
-To learn more about Next.js, take a look at the following resources:
+Tanpa environment Supabase, aplikasi tetap bisa dipakai. Data tugas disimpan di `localStorage` browser. Ekspor JSON secara berkala. Browser/perangkat berbeda tidak otomatis berbagi data.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 4. Aktifkan sinkronisasi online dan lampiran
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Buat proyek di Supabase.
+2. Buka SQL Editor dan jalankan seluruh `supabase/schema.sql`.
+3. Di Authentication > Providers, aktifkan Email. Untuk penggunaan nyata, sebaiknya biarkan verifikasi email aktif.
+4. Di Project Settings > API, salin Project URL dan publishable/anon key. Jangan pernah memasukkan `service_role` key ke frontend.
+5. Buat `.env.local` dari `.env.example`, isi dua variabel tersebut.
+6. Tambahkan variabel yang sama di Vercel > Project > Settings > Environment Variables (Production, Preview, Development), lalu redeploy.
+7. Login/daftar dari aplikasi dan tekan **Sinkronkan sekarang** di setiap perangkat setelah perubahan.
 
-## Deploy on Vercel
+### Catatan sinkronisasi
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Sinkronisasi saat ini bersifat manual (tombol) dan memakai `updatedAt` untuk memilih versi yang lebih baru. Ini bukan kolaborasi real-time; jika dua perangkat mengedit tugas yang sama bersamaan, versi terakhir dapat menang. Ekspor JSON tetap disarankan.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-"# task-manager" 
-"# task-manager" 
+### Catatan lampiran
+
+Bucket private dan signed URL digunakan agar file tidak menjadi publik. Upload lampiran dilakukan dari kartu tugas setelah tugas tersimpan dan pengguna login. Batas 10 MB per file. Metadata lampiran ikut sinkron saat menekan tombol sinkronisasi.
+
+## 5. Deploy
+
+```bash
+npm run build
+```
+
+Jika build sukses, commit dan push ke GitHub atau deploy ulang melalui Vercel. Jangan commit `.env.local`.
+
+## Migrasi dari v2
+
+Halaman mencoba membaca kunci `task-manager-tasks` jika kunci v3 belum ada dan menerima impor JSON array maupun ekspor berbentuk `{ "tasks": [...] }`. Tetap ekspor cadangan v2 terlebih dahulu sebelum mengganti kode.
