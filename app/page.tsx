@@ -1,972 +1,429 @@
-
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-type Status = "Belum dikerjakan" | "Sedang dikerjakan" | "Selesai";
-type Priority = "Rendah" | "Sedang" | "Tinggi";
-
-type TaskLink = {
-  id: string;
-  name: string;
-  url: string;
-};
-
+type Status = "todo" | "doing" | "done";
+type Priority = "low" | "medium" | "high";
+type TaskLink = { id: string; label: string; url: string };
+type Subtask = { id: string; title: string; done: boolean };
+type Attachment = { id: string; name: string; path: string; url?: string; size: number };
 type Task = {
   id: string;
   title: string;
   description: string;
   status: Status;
   priority: Priority;
-  dueDate: string;
-  createdAt: number;
-  category?: string;
-  url?: string;
-  links?: TaskLink[];
-};
-
-type TaskForm = {
-  title: string;
-  description: string;
-  status: Status;
-  priority: Priority;
-  dueDate: string;
   category: string;
+  subject: string;
+  dueDate: string;
+  createdAt: string;
+  updatedAt: string;
+  links: TaskLink[];
+  subtasks: Subtask[];
+  attachments: Attachment[];
+  notes: string;
+  grade: string;
 };
 
-const STORAGE_KEY = "task-manager-v1";
-const THEME_KEY = "task-manager-dark";
-
-const STATUSES: Status[] = [
-  "Belum dikerjakan",
-  "Sedang dikerjakan",
-  "Selesai",
+const STORAGE_KEY = "tugas-manager-v3";
+const THEME_KEY = "tugas-manager-theme";
+const DELETED_KEY = "tugas-manager-deleted-v3";
+const BUCKET = "task-attachments";
+const statuses: { value: Status; label: string }[] = [
+  { value: "todo", label: "Belum dikerjakan" },
+  { value: "doing", label: "Sedang dikerjakan" },
+  { value: "done", label: "Selesai" },
 ];
+const priorities: { value: Priority; label: string }[] = [
+  { value: "low", label: "Rendah" },
+  { value: "medium", label: "Sedang" },
+  { value: "high", label: "Tinggi" },
+];
+const uid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+const today = () => new Date().toISOString().slice(0, 10);
+const emptyTask = (): Task => ({
+  id: uid(), title: "", description: "", status: "todo", priority: "medium",
+  category: "Sekolah", subject: "", dueDate: "", createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(), links: [], subtasks: [], attachments: [], notes: "", grade: "",
+});
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabase: SupabaseClient | null =
+  supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
-const PRIORITIES: Priority[] = ["Rendah", "Sedang", "Tinggi"];
-
-const EMPTY_FORM: TaskForm = {
-  title: "",
-  description: "",
-  status: "Belum dikerjakan",
-  priority: "Sedang",
-  dueDate: "",
-  category: "",
-};
-
-function createId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function isValidStatus(value: unknown): value is Status {
-  return STATUSES.includes(value as Status);
-}
-
-function isValidPriority(value: unknown): value is Priority {
-  return PRIORITIES.includes(value as Priority);
-}
-
-function validUrl(value: string) {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" || parsed.protocol === "http:";
-  } catch {
-    return false;
-  }
-}
-
-function normalizeTask(value: unknown): Task | null {
-  if (!value || typeof value !== "object") return null;
-
-  const item = value as Record<string, unknown>;
-
-  if (
-    typeof item.id !== "string" ||
-    typeof item.title !== "string" ||
-    typeof item.description !== "string" ||
-    !isValidStatus(item.status) ||
-    !isValidPriority(item.priority) ||
-    typeof item.dueDate !== "string"
-  ) {
-    return null;
-  }
-
-  const links: TaskLink[] = Array.isArray(item.links)
-    ? item.links
-        .filter(
-          (link): link is Record<string, unknown> =>
-            !!link && typeof link === "object"
-        )
-        .filter(
-          (link) =>
-            typeof link.id === "string" &&
-            typeof link.name === "string" &&
-            typeof link.url === "string" &&
-            validUrl(link.url)
-        )
-        .map((link) => ({
-          id: link.id as string,
-          name: link.name as string,
-          url: link.url as string,
-        }))
-    : [];
-
-  // Memindahkan tautan lama ke format banyak tautan.
-  if (links.length === 0 && typeof item.url === "string" && validUrl(item.url)) {
-    links.push({
-      id: createId(),
-      name: "Tautan referensi",
-      url: item.url,
-    });
-  }
-
+function normalizeTask(raw: any): Task {
+  // Supports importing v2 exports and the previous single-link format.
+  const links: TaskLink[] = Array.isArray(raw.links)
+    ? raw.links.map((x: any) => ({ id: String(x.id || uid()), label: String(x.label || "Tautan"), url: String(x.url || "") }))
+    : raw.link ? [{ id: uid(), label: "Tautan lama", url: String(raw.link) }] : [];
   return {
-    id: item.id,
-    title: item.title,
-    description: item.description,
-    status: item.status,
-    priority: item.priority,
-    dueDate: item.dueDate,
-    createdAt:
-      typeof item.createdAt === "number" ? item.createdAt : Date.now(),
-    category: typeof item.category === "string" ? item.category : "",
-    url: "",
-    links,
+    id: String(raw.id || uid()), title: String(raw.title || "Tugas tanpa judul"),
+    description: String(raw.description || ""), status: statuses.some(s => s.value === raw.status) ? raw.status : "todo",
+    priority: priorities.some(p => p.value === raw.priority) ? raw.priority : "medium",
+    category: String(raw.category || "Sekolah"), subject: String(raw.subject || ""),
+    dueDate: String(raw.dueDate || ""), createdAt: String(raw.createdAt || new Date().toISOString()),
+    updatedAt: String(raw.updatedAt || new Date().toISOString()), links,
+    subtasks: Array.isArray(raw.subtasks) ? raw.subtasks.map((x: any) => ({ id: String(x.id || uid()), title: String(x.title || ""), done: Boolean(x.done) })) : [],
+    attachments: Array.isArray(raw.attachments) ? raw.attachments.map((x: any) => ({
+      id: String(x.id || uid()), name: String(x.name || "Lampiran"), path: String(x.path || ""),
+      url: x.url ? String(x.url) : undefined, size: Number(x.size || 0)
+    })) : [],
+    notes: String(raw.notes || ""), grade: String(raw.grade || ""),
   };
 }
 
-function statusColor(status: Status) {
-  if (status === "Selesai") {
-    return "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300";
-  }
-
-  if (status === "Sedang dikerjakan") {
-    return "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300";
-  }
-
-  return "bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200";
+function formatDate(value: string) {
+  if (!value) return "Tanpa tenggat";
+  return new Date(`${value}T00:00:00`).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
+}
+function isOverdue(t: Task) { return Boolean(t.dueDate && t.dueDate < today() && t.status !== "done"); }
+function isSoon(t: Task) {
+  if (!t.dueDate || t.status === "done") return false;
+  const diff = Math.ceil((new Date(`${t.dueDate}T00:00:00`).getTime() - new Date(`${today()}T00:00:00`).getTime()) / 86400000);
+  return diff >= 0 && diff <= 2;
 }
 
-function priorityColor(priority: Priority) {
-  if (priority === "Tinggi") {
-    return "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300";
-  }
-
-  if (priority === "Sedang") {
-    return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300";
-  }
-
-  return "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300";
-}
-
-export default function Home() {
+export default function Page() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
-
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("Semua");
-  const [priorityFilter, setPriorityFilter] = useState("Semua");
-  const [sortBy, setSortBy] = useState("Terbaru");
-
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<TaskForm>(EMPTY_FORM);
-
-  const [links, setLinks] = useState<TaskLink[]>([]);
-  const [linkName, setLinkName] = useState("");
+  const [ready, setReady] = useState(false);
+  const [dark, setDark] = useState(false);
+  const [view, setView] = useState<"list" | "board" | "calendar">("list");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("due");
+  const [editing, setEditing] = useState<Task | null>(null);
+  const [subtaskDraft, setSubtaskDraft] = useState("");
+  const [linkLabel, setLinkLabel] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
-  const [linkError, setLinkError] = useState("");
+  const [message, setMessage] = useState("");
+  const [month, setMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [userEmail, setUserEmail] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [onlineUser, setOnlineUser] = useState<any>(null);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-
       if (saved) {
-        const parsed: unknown = JSON.parse(saved);
-
-        if (Array.isArray(parsed)) {
-          setTasks(
-            parsed
-              .map(normalizeTask)
-              .filter((task): task is Task => task !== null)
-          );
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setTasks(parsed.map(normalizeTask));
+      } else {
+        const old = localStorage.getItem("task-manager-tasks");
+        if (old) {
+          const parsed = JSON.parse(old);
+          if (Array.isArray(parsed)) setTasks(parsed.map(normalizeTask));
         }
       }
-
-      setDarkMode(localStorage.getItem(THEME_KEY) === "true");
+      setDark(localStorage.getItem(THEME_KEY) === "dark");
     } catch {
-      console.error("Gagal membaca data tugas dari browser.");
-    } finally {
-      setLoaded(true);
+      setMessage("Data lokal tidak bisa dibaca. Coba impor cadangan JSON.");
     }
+    setReady(true);
   }, []);
 
   useEffect(() => {
-    if (loaded) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-    }
-  }, [tasks, loaded]);
+    if (!ready) return;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); }
+    catch { setMessage("Penyimpanan lokal penuh. Ekspor cadangan dan hapus lampiran berukuran besar."); }
+  }, [tasks, ready]);
 
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", darkMode);
+    if (!ready) return;
+    localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+    document.documentElement.classList.toggle("dark", dark);
+  }, [dark, ready]);
 
-    if (loaded) {
-      localStorage.setItem(THEME_KEY, String(darkMode));
+  useEffect(() => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "granted") {
+      const due = tasks.filter(t => isSoon(t) || isOverdue(t));
+      const lastKey = `tm-notified-${today()}`;
+      const seen = JSON.parse(sessionStorage.getItem(lastKey) || "[]") as string[];
+      const fresh = due.filter(t => !seen.includes(t.id));
+      fresh.forEach(t => new Notification(isOverdue(t) ? "Tugas terlambat" : "Tenggat tugas mendekat", {
+        body: `${t.title} — ${formatDate(t.dueDate)}`,
+      }));
+      if (fresh.length) sessionStorage.setItem(lastKey, JSON.stringify([...seen, ...fresh.map(t => t.id)]));
     }
-  }, [darkMode, loaded]);
+  }, [tasks]);
 
-  const completed = tasks.filter((task) => task.status === "Selesai").length;
-  const inProgress = tasks.filter(
-    (task) => task.status === "Sedang dikerjakan"
-  ).length;
-  const pending = tasks.filter(
-    (task) => task.status === "Belum dikerjakan"
-  ).length;
-
-  const progress = tasks.length
-    ? Math.round((completed / tasks.length) * 100)
-    : 0;
-
-  const overdue = tasks.filter(
-    (task) =>
-      task.dueDate &&
-      task.dueDate < new Date().toISOString().slice(0, 10) &&
-      task.status !== "Selesai"
-  ).length;
-
-  const filteredTasks = useMemo(() => {
-    const result = tasks.filter((task) => {
-      const keyword = search.toLowerCase();
-
-      const matchesSearch =
-        task.title.toLowerCase().includes(keyword) ||
-        task.description.toLowerCase().includes(keyword) ||
-        (task.category ?? "").toLowerCase().includes(keyword) ||
-        (task.links ?? []).some(
-          (link) =>
-            link.name.toLowerCase().includes(keyword) ||
-            link.url.toLowerCase().includes(keyword)
-        );
-
-      const matchesStatus =
-        statusFilter === "Semua" || task.status === statusFilter;
-
-      const matchesPriority =
-        priorityFilter === "Semua" || task.priority === priorityFilter;
-
-      return matchesSearch && matchesStatus && matchesPriority;
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setOnlineUser(data.session?.user || null);
+      setUserEmail(data.session?.user?.email || "");
     });
-
-    result.sort((a, b) => {
-      if (sortBy === "Tenggat terdekat") {
-        if (!a.dueDate) return 1;
-        if (!b.dueDate) return -1;
-        return a.dueDate.localeCompare(b.dueDate);
-      }
-
-      if (sortBy === "Prioritas tertinggi") {
-        const rank = { Tinggi: 3, Sedang: 2, Rendah: 1 };
-        return rank[b.priority] - rank[a.priority];
-      }
-
-      if (sortBy === "Judul A-Z") {
-        return a.title.localeCompare(b.title);
-      }
-
-      return b.createdAt - a.createdAt;
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setOnlineUser(session?.user || null);
+      setUserEmail(session?.user?.email || "");
     });
+    return () => listener.subscription.unsubscribe();
+  }, []);
 
-    return result;
-  }, [tasks, search, statusFilter, priorityFilter, sortBy]);
-
-  function openCreate() {
-    setEditingId(null);
-    setForm(EMPTY_FORM);
-    setLinks([]);
-    setLinkName("");
-    setLinkUrl("");
-    setLinkError("");
-    setModalOpen(true);
-  }
-
-  function openEdit(task: Task) {
-    setEditingId(task.id);
-
-    setForm({
-      title: task.title,
-      description: task.description,
-      status: task.status,
-      priority: task.priority,
-      dueDate: task.dueDate,
-      category: task.category ?? "",
-    });
-
-    setLinks(
-      task.links?.length
-        ? task.links.map((link) => ({ ...link }))
-        : task.url && validUrl(task.url)
-          ? [
-              {
-                id: createId(),
-                name: "Tautan referensi",
-                url: task.url,
-              },
-            ]
-          : []
-    );
-
-    setLinkName("");
-    setLinkUrl("");
-    setLinkError("");
-    setModalOpen(true);
-  }
-
-  function addLink() {
-    const name = linkName.trim();
-    const url = linkUrl.trim();
-
-    if (!name) {
-      setLinkError("Masukkan nama tautan terlebih dahulu.");
-      return;
-    }
-
-    if (!validUrl(url)) {
-      setLinkError("URL harus valid dan diawali http:// atau https://.");
-      return;
-    }
-
-    setLinks((current) => [...current, { id: createId(), name, url }]);
-    setLinkName("");
-    setLinkUrl("");
-    setLinkError("");
-  }
-
-  function removeLink(id: string) {
-    setLinks((current) => current.filter((link) => link.id !== id));
-  }
-
-  function saveTask(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const title = form.title.trim();
-
-    if (!title) return;
-
-    if (editingId) {
-      setTasks((current) =>
-        current.map((task) =>
-          task.id === editingId
-            ? {
-                ...task,
-                ...form,
-                title,
-                url: "",
-                links: links.map((link) => ({ ...link })),
-              }
-            : task
-        )
-      );
-    } else {
-      const newTask: Task = {
-        id: createId(),
-        ...form,
-        title,
-        createdAt: Date.now(),
-        url: "",
-        links: links.map((link) => ({ ...link })),
-      };
-
-      setTasks((current) => [newTask, ...current]);
-    }
-
-    setModalOpen(false);
-  }
-
-  function deleteTask(id: string) {
-    if (!window.confirm("Yakin ingin menghapus tugas ini?")) return;
-    setTasks((current) => current.filter((task) => task.id !== id));
-  }
-
-  function exportTasks() {
-    const blob = new Blob([JSON.stringify(tasks, null, 2)], {
-      type: "application/json",
-    });
-
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "nexora-task-backup.json";
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function importTasks(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = () => {
+  const notify = (text: string) => { setMessage(text); window.setTimeout(() => setMessage(""), 3500); };
+  const saveTask = (e: FormEvent) => {
+    e.preventDefault();
+    if (!editing?.title.trim()) { notify("Judul tugas wajib diisi."); return; }
+    const clean = normalizeTask({ ...editing, title: editing.title.trim(), updatedAt: new Date().toISOString() });
+    setTasks(old => old.some(t => t.id === clean.id) ? old.map(t => t.id === clean.id ? clean : t) : [clean, ...old]);
+    setEditing(null); setSubtaskDraft(""); setLinkLabel(""); setLinkUrl(""); notify("Tugas tersimpan.");
+  };
+  const updateTask = (id: string, patch: Partial<Task>) =>
+    setTasks(old => old.map(t => t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t));
+  const deleteTask = (id: string) => {
+    if (confirm("Hapus tugas ini? Tindakan ini tidak bisa dibatalkan.")) {
       try {
-        const parsed: unknown = JSON.parse(String(reader.result));
+        const deleted = JSON.parse(localStorage.getItem(DELETED_KEY) || "[]") as string[];
+        localStorage.setItem(DELETED_KEY, JSON.stringify(Array.from(new Set([...deleted, id]))));
+      } catch { /* deletion still works locally; export a backup if browser storage is unavailable */ }
+      setTasks(old => old.filter(t => t.id !== id)); notify("Tugas dihapus.");
+    }
+  };
+  const addLink = () => {
+    if (!editing || !linkUrl.trim()) return;
+    let parsed: URL;
+    try { parsed = new URL(linkUrl.trim()); } catch { notify("URL tidak valid. Gunakan https:// atau http://."); return; }
+    if (!["http:", "https:"].includes(parsed.protocol)) { notify("Hanya tautan HTTP/HTTPS yang diizinkan."); return; }
+    setEditing({ ...editing, links: [...editing.links, { id: uid(), label: linkLabel.trim() || "Tautan", url: parsed.toString() }] });
+    setLinkLabel(""); setLinkUrl("");
+  };
+  const addSubtask = () => {
+    if (!editing || !subtaskDraft.trim()) return;
+    setEditing({ ...editing, subtasks: [...editing.subtasks, { id: uid(), title: subtaskDraft.trim(), done: false }] });
+    setSubtaskDraft("");
+  };
+  const addAttachment = async (taskId: string, file: File) => {
+    if (file.size > 10 * 1024 * 1024) { notify("Maksimal ukuran satu lampiran adalah 10 MB."); return; }
+    if (supabase && onlineUser) {
+      const path = `${onlineUser.id}/${taskId}/${uid()}-${file.name.replace(/[^\w.-]/g, "_")}`;
+      const { error } = await supabase.storage.from(BUCKET).upload(path, file, { upsert: false });
+      if (error) { notify(`Upload gagal: ${error.message}`); return; }
+      updateTask(taskId, { attachments: [...(tasks.find(t => t.id === taskId)?.attachments || []), { id: uid(), name: file.name, path, size: file.size }] });
+      notify("Lampiran diunggah ke penyimpanan online.");
+    } else {
+      // Local-only attachment metadata is not a file backup; keep the file itself outside localStorage.
+      notify("Lampiran online memerlukan login Supabase. Simpan file ini di perangkat dan tambahkan catatannya pada tugas.");
+    }
+  };
 
-        if (!Array.isArray(parsed)) {
-          throw new Error("Format cadangan harus berupa array JSON.");
-        }
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    const arr = tasks.filter(t => {
+      const haystack = [t.title, t.description, t.category, t.subject, t.notes, ...t.links.map(l => `${l.label} ${l.url}`)].join(" ").toLowerCase();
+      return (!q || haystack.includes(q)) &&
+        (statusFilter === "all" || t.status === statusFilter) &&
+        (priorityFilter === "all" || t.priority === priorityFilter) &&
+        (categoryFilter === "all" || t.category === categoryFilter);
+    });
+    return arr.sort((a, b) => {
+      if (sortBy === "created") return b.createdAt.localeCompare(a.createdAt);
+      if (sortBy === "priority") return ({ high: 0, medium: 1, low: 2 }[a.priority] - { high: 0, medium: 1, low: 2 }[b.priority]);
+      if (sortBy === "title") return a.title.localeCompare(b.title, "id");
+      return (a.dueDate || "9999-12-31").localeCompare(b.dueDate || "9999-12-31");
+    });
+  }, [tasks, query, statusFilter, priorityFilter, categoryFilter, sortBy]);
 
-        const imported = parsed
-          .map(normalizeTask)
-          .filter((task): task is Task => task !== null);
+  const stats = {
+    total: tasks.length, done: tasks.filter(t => t.status === "done").length,
+    doing: tasks.filter(t => t.status === "doing").length,
+    overdue: tasks.filter(isOverdue).length,
+    soon: tasks.filter(isSoon).length,
+  };
+  const categories = Array.from(new Set(tasks.map(t => t.category).filter(Boolean)));
+  const completion = stats.total ? Math.round(stats.done / stats.total * 100) : 0;
+  const openEditor = (task?: Task) => { setEditing(task ? structuredClone(task) : emptyTask()); setSubtaskDraft(""); setLinkLabel(""); setLinkUrl(""); };
 
-        if (imported.length === 0 && parsed.length > 0) {
-          throw new Error("Tidak ada data tugas yang valid di file.");
-        }
+  const exportJson = () => {
+    const blob = new Blob([JSON.stringify({ version: 3, exportedAt: new Date().toISOString(), tasks }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob); const a = document.createElement("a");
+    a.href = url; a.download = `tugas-manager-backup-${today()}.json`; a.click(); URL.revokeObjectURL(url);
+  };
+  const importJson = async (file?: File) => {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const list = Array.isArray(parsed) ? parsed : parsed.tasks;
+      if (!Array.isArray(list) || !list.every(x => x && typeof x === "object")) throw new Error("Format tidak dikenali");
+      if (!confirm(`Impor ${list.length} tugas? Tugas saat ini akan digabung berdasarkan ID.`)) return;
+      const imported = list.map(normalizeTask);
+      setTasks(old => {
+        const map = new Map(old.map(t => [t.id, t]));
+        imported.forEach(t => map.set(t.id, t));
+        return Array.from(map.values());
+      });
+      notify(`${imported.length} tugas berhasil diimpor.`);
+    } catch { notify("File JSON tidak valid atau rusak."); }
+  };
 
-        if (
-          window.confirm(
-            `Impor ${imported.length} tugas? Data tugas saat ini akan diganti.`
-          )
-        ) {
-          setTasks(imported);
-          alert("Cadangan berhasil diimpor.");
-        }
-      } catch (error) {
-        alert(
-          error instanceof Error
-            ? `Gagal mengimpor: ${error.message}`
-            : "File JSON tidak valid."
-        );
-      }
+  const signIn = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!supabase) return;
+    setSyncing(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+    setSyncing(false);
+    notify(error ? `Login gagal: ${error.message}` : "Login berhasil.");
+  };
+  const signUp = async () => {
+    if (!supabase) return;
+    setSyncing(true);
+    const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+    setSyncing(false);
+    notify(error ? `Daftar gagal: ${error.message}` : "Permintaan akun dikirim. Periksa email jika verifikasi diaktifkan.");
+  };
+  const signOut = async () => { if (supabase) await supabase.auth.signOut(); };
+  const syncNow = async () => {
+    if (!supabase || !onlineUser) return;
+    setSyncing(true);
+    const { data, error } = await supabase.from("tasks").select("id,payload,updated_at").eq("user_id", onlineUser.id);
+    if (error) { setSyncing(false); notify(`Gagal mengambil data: ${error.message}`); return; }
+    const remote = (data || []).map((r: any) => normalizeTask(r.payload));
+    let deletedIds: string[] = [];
+    try { deletedIds = JSON.parse(localStorage.getItem(DELETED_KEY) || "[]"); } catch { deletedIds = []; }
+    const deletedSet = new Set(deletedIds);
+    const merged = new Map<string, Task>();
+    [...remote, ...tasks].filter(t => !deletedSet.has(t.id)).forEach(t => {
+      const existing = merged.get(t.id);
+      if (!existing || t.updatedAt >= existing.updatedAt) merged.set(t.id, t);
+    });
+    const all = Array.from(merged.values());
+    if (deletedIds.length) {
+      const { error: deleteError } = await supabase.from("tasks").delete().eq("user_id", onlineUser.id).in("id", deletedIds);
+      if (deleteError) { setSyncing(false); notify(`Gagal menyinkronkan penghapusan: ${deleteError.message}`); return; }
+    }
+    const rows = all.map(t => ({ id: t.id, user_id: onlineUser.id, payload: t, updated_at: t.updatedAt }));
+    const { error: upsertError } = rows.length
+      ? await supabase.from("tasks").upsert(rows, { onConflict: "user_id,id" })
+      : { error: null };
+    setSyncing(false);
+    if (upsertError) { notify(`Sinkronisasi gagal: ${upsertError.message}`); return; }
+    localStorage.removeItem(DELETED_KEY);
+    setTasks(all); notify(`Sinkronisasi selesai: ${all.length} tugas.`);
+  };
 
-      event.target.value = "";
-    };
+  const monthLabel = month.toLocaleDateString("id-ID", { month: "long", year: "numeric" });
+  const calendarCells = useMemo(() => {
+    const first = new Date(month.getFullYear(), month.getMonth(), 1);
+    const start = (first.getDay() + 6) % 7;
+    const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+    return [...Array(start).fill(null), ...Array.from({ length: days }, (_, i) => i + 1)];
+  }, [month]);
 
-    reader.onerror = () => {
-      alert("File tidak dapat dibaca.");
-      event.target.value = "";
-    };
-
-    reader.readAsText(file);
-  }
-
-  if (!loaded) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50 text-gray-700 dark:bg-gray-950 dark:text-gray-200">
-        Memuat NEXORA Task Manager...
-      </main>
-    );
-  }
+  if (!ready) return <main className="page"><div className="panel">Memuat Tugas Manager…</div></main>;
 
   return (
-    <main className="min-h-screen bg-gray-50 text-gray-900 transition-colors dark:bg-gray-950 dark:text-gray-100">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
-          <div>
-            <p className="mb-2 text-sm font-semibold uppercase tracking-[0.2em] text-blue-600 dark:text-blue-400">
-              NEXORA
-            </p>
-            <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
-              Task Manager
-            </h1>
-            <p className="mt-2 text-gray-600 dark:text-gray-400">
-              Atur tugas, pantau progres, dan simpan semua referensi dalam satu tempat.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              onClick={() => setDarkMode((value) => !value)}
-              className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
-            >
-              {darkMode ? "☀️ Mode terang" : "🌙 Mode gelap"}
-            </button>
-
-            <button
-              onClick={exportTasks}
-              className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
-            >
-              Ekspor JSON
-            </button>
-
-            <label className="cursor-pointer rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800">
-              Impor JSON
-              <input
-                type="file"
-                accept=".json,application/json"
-                onChange={importTasks}
-                className="hidden"
-              />
-            </label>
-
-            <button
-              onClick={openCreate}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-            >
-              + Tambah tugas
-            </button>
-          </div>
-        </header>
-
-        <section className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            { label: "Total tugas", value: tasks.length },
-            { label: "Belum dikerjakan", value: pending },
-            { label: "Sedang dikerjakan", value: inProgress },
-            { label: "Selesai", value: completed },
-          ].map((item) => (
-            <div
-              key={item.label}
-              className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-            >
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                {item.label}
-              </p>
-              <p className="mt-2 text-3xl font-bold">{item.value}</p>
-            </div>
-          ))}
-        </section>
-
-        <section className="mb-8 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-semibold">Progres keseluruhan</h2>
-            <span className="text-sm font-semibold text-blue-600 dark:text-blue-400">
-              {progress}%
-            </span>
-          </div>
-
-          <div
-            className="h-3 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800"
-            role="progressbar"
-            aria-valuenow={progress}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div
-              className="h-full rounded-full bg-blue-600 transition-all"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-
-          <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
-            {overdue > 0
-              ? `${overdue} tugas melewati tenggat waktu.`
-              : "Tidak ada tugas yang melewati tenggat waktu."}
-          </p>
-        </section>
-
-        <section className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Cari judul, kategori, atau tautan..."
-            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900"
-          />
-
-          <select
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value)}
-            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900"
-          >
-            <option value="Semua">Semua status</option>
-            {STATUSES.map((status) => (
-              <option key={status} value={status}>
-                {status}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={priorityFilter}
-            onChange={(event) => setPriorityFilter(event.target.value)}
-            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900"
-          >
-            <option value="Semua">Semua prioritas</option>
-            {PRIORITIES.map((priority) => (
-              <option key={priority} value={priority}>
-                Prioritas {priority}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={sortBy}
-            onChange={(event) => setSortBy(event.target.value)}
-            className="rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-900"
-          >
-            <option>Terbaru</option>
-            <option>Tenggat terdekat</option>
-            <option>Prioritas tertinggi</option>
-            <option>Judul A-Z</option>
-          </select>
-        </section>
-
-        <section>
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-bold">Daftar tugas</h2>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              {filteredTasks.length} tugas
-            </span>
-          </div>
-
-          {filteredTasks.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-gray-300 px-5 py-16 text-center dark:border-gray-700">
-              <p className="text-lg font-semibold">Belum ada tugas yang cocok</p>
-              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-                Tambahkan tugas baru atau ubah filter pencarian.
-              </p>
-              {tasks.length === 0 && (
-                <button
-                  onClick={openCreate}
-                  className="mt-5 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
-                >
-                  Buat tugas pertama
-                </button>
-              )}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              {filteredTasks.map((task) => {
-                const taskLinks =
-                  task.links?.length
-                    ? task.links
-                    : task.url && validUrl(task.url)
-                      ? [
-                          {
-                            id: "legacy-link",
-                            name: "Tautan referensi",
-                            url: task.url,
-                          },
-                        ]
-                      : [];
-
-                return (
-                  <article
-                    key={task.id}
-                    className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900"
-                  >
-                    <div className="flex flex-wrap gap-2">
-                      <span
-                        className={`rounded-full px-3 py-1 text-xs font-semibold ${statusColor(task.status)}`}
-                      >
-                        {task.status}
-                      </span>
-
-                      <span
-                        className={`rounded-full px-3 py-1 text-xs font-semibold ${priorityColor(task.priority)}`}
-                      >
-                        Prioritas {task.priority}
-                      </span>
-
-                      {task.category && (
-                        <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-semibold text-purple-800 dark:bg-purple-900/40 dark:text-purple-300">
-                          {task.category}
-                        </span>
-                      )}
-                    </div>
-
-                    <h3 className="mt-4 break-words text-lg font-bold">
-                      {task.title}
-                    </h3>
-
-                    {task.description && (
-                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-gray-600 dark:text-gray-400">
-                        {task.description}
-                      </p>
-                    )}
-
-                    <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-sm text-gray-500 dark:text-gray-400">
-                      {task.dueDate && (
-                        <span>
-                          📅 Tenggat:{" "}
-                          {new Date(
-                            `${task.dueDate}T00:00:00`
-                          ).toLocaleDateString("id-ID", {
-                            day: "numeric",
-                            month: "long",
-                            year: "numeric",
-                          })}
-                        </span>
-                      )}
-
-                      <span>🔗 {taskLinks.length} tautan</span>
-                    </div>
-
-                    {taskLinks.length > 0 && (
-                      <div className="mt-4 rounded-xl bg-gray-50 p-3 dark:bg-gray-800/70">
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                          Tautan referensi
-                        </p>
-
-                        <ul className="space-y-2">
-                          {taskLinks.map((link) => (
-                            <li key={link.id} className="break-all text-sm">
-                              <a
-                                href={link.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-medium text-blue-600 hover:underline dark:text-blue-400"
-                              >
-                                ↗ {link.name}
-                              </a>
-                              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                {link.url}
-                              </p>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    <div className="mt-5 flex flex-wrap gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
-                      <button
-                        onClick={() => openEdit(task)}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
-                      >
-                        Edit
-                      </button>
-
-                      <button
-                        onClick={() => deleteTask(task.id)}
-                        className="rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950"
-                      >
-                        Hapus
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        <footer className="mt-12 border-t border-gray-200 py-6 text-center text-sm text-gray-500 dark:border-gray-800 dark:text-gray-400">
-          NEXORA Task Manager · Data disimpan di browser perangkat ini.
-        </footer>
-      </div>
-
-      {modalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 py-8"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) {
-              setModalOpen(false);
-            }
-          }}
-        >
-          <div className="my-auto w-full max-w-2xl rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-900">
-            <div className="mb-6 flex items-center justify-between gap-3">
-              <h2 className="text-xl font-bold">
-                {editingId ? "Edit tugas" : "Tambah tugas"}
-              </h2>
-
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="rounded-lg px-3 py-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800"
-                aria-label="Tutup"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={saveTask} className="space-y-5">
-              <div>
-                <label className="mb-2 block text-sm font-medium">
-                  Judul tugas *
-                </label>
-                <input
-                  required
-                  autoFocus
-                  maxLength={150}
-                  value={form.title}
-                  onChange={(event) =>
-                    setForm({ ...form, title: event.target.value })
-                  }
-                  placeholder="Contoh: Membuat website NEXORA"
-                  className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
-                />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium">
-                  Deskripsi
-                </label>
-                <textarea
-                  rows={3}
-                  maxLength={3000}
-                  value={form.description}
-                  onChange={(event) =>
-                    setForm({ ...form, description: event.target.value })
-                  }
-                  placeholder="Detail tugas atau catatan..."
-                  className="w-full resize-y rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="mb-2 block text-sm font-medium">
-                    Status
-                  </label>
-                  <select
-                    value={form.status}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        status: event.target.value as Status,
-                      })
-                    }
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
-                  >
-                    {STATUSES.map((status) => (
-                      <option key={status} value={status}>
-                        {status}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium">
-                    Prioritas
-                  </label>
-                  <select
-                    value={form.priority}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        priority: event.target.value as Priority,
-                      })
-                    }
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
-                  >
-                    {PRIORITIES.map((priority) => (
-                      <option key={priority} value={priority}>
-                        {priority}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium">
-                    Kategori
-                  </label>
-                  <input
-                    maxLength={60}
-                    value={form.category}
-                    onChange={(event) =>
-                      setForm({ ...form, category: event.target.value })
-                    }
-                    placeholder="Contoh: Sekolah, Coding"
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-medium">
-                    Tenggat waktu
-                  </label>
-                  <input
-                    type="date"
-                    value={form.dueDate}
-                    onChange={(event) =>
-                      setForm({ ...form, dueDate: event.target.value })
-                    }
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-950"
-                  />
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
-                <div className="mb-4">
-                  <h3 className="font-semibold">Tautan referensi</h3>
-                  <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                    Tambahkan beberapa tautan, misalnya GitHub, dokumentasi,
-                    video, atau sumber belajar.
-                  </p>
-                </div>
-
-                {links.length > 0 && (
-                  <ul className="mb-4 space-y-3">
-                    {links.map((link) => (
-                      <li
-                        key={link.id}
-                        className="flex min-w-0 items-start justify-between gap-3 rounded-lg bg-gray-50 p-3 dark:bg-gray-800"
-                      >
-                        <div className="min-w-0">
-                          <p className="break-words text-sm font-semibold">
-                            {link.name}
-                          </p>
-                          <p className="mt-1 break-all text-xs text-gray-500 dark:text-gray-400">
-                            {link.url}
-                          </p>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => removeLink(link.id)}
-                          className="shrink-0 rounded-lg px-2 py-1 text-sm font-medium text-red-600 hover:bg-red-100 dark:hover:bg-red-950"
-                        >
-                          Hapus
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                <div className="space-y-3">
-                  <input
-                    value={linkName}
-                    onChange={(event) => setLinkName(event.target.value)}
-                    placeholder="Nama tautan, misalnya GitHub"
-                    maxLength={100}
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-950"
-                  />
-
-                  <input
-                    type="url"
-                    value={linkUrl}
-                    onChange={(event) => setLinkUrl(event.target.value)}
-                    placeholder="https://github.com/..."
-                    className="w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-950"
-                  />
-
-                  {linkError && (
-                    <p className="text-sm text-red-600">{linkError}</p>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={addLink}
-                    className="w-full rounded-xl border border-blue-300 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
-                  >
-                    + Tambahkan tautan
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
-                <button
-                  type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="rounded-xl border border-gray-300 px-5 py-3 text-sm font-semibold hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
-                >
-                  Batal
-                </button>
-
-                <button
-                  type="submit"
-                  className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
-                >
-                  {editingId ? "Simpan perubahan" : "Simpan tugas"}
-                </button>
-              </div>
-            </form>
-          </div>
+    <main className={`page ${dark ? "theme-dark" : ""}`}>
+      <header className="topbar">
+        <div><p className="eyebrow">RUANG KERJA PRIBADI</p><h1>Tugas Manager <span>v3</span></h1><p className="muted">Satu tempat untuk tugas sekolah, proyek, dan target pribadi.</p></div>
+        <div className="top-actions">
+          <button className="btn secondary" onClick={() => setDark(v => !v)}>{dark ? "☀️ Terang" : "🌙 Gelap"}</button>
+          <button className="btn secondary" onClick={exportJson}>Ekspor JSON</button>
+          <label className="btn secondary file-button">Impor JSON<input type="file" accept="application/json,.json" onChange={e => { void importJson(e.target.files?.[0]); e.currentTarget.value = ""; }} /></label>
+          <button className="btn primary" onClick={() => openEditor()}>＋ Tugas baru</button>
         </div>
-      )}
+      </header>
+
+      {message && <div className="toast" role="status">{message}</div>}
+
+      <section className="stats-grid">
+        <article className="stat-card"><span>Total tugas</span><strong>{stats.total}</strong><small>Semua kategori</small></article>
+        <article className="stat-card"><span>Selesai</span><strong>{stats.done}</strong><small>{completion}% dari seluruh tugas</small><div className="progress"><i style={{ width: `${completion}%` }} /></div></article>
+        <article className="stat-card"><span>Sedang dikerjakan</span><strong>{stats.doing}</strong><small>Dalam proses</small></article>
+        <article className={`stat-card ${stats.overdue ? "danger-card" : ""}`}><span>Terlambat</span><strong>{stats.overdue}</strong><small>{stats.soon} tenggat dalam 2 hari</small></article>
+      </section>
+
+      <section className="panel sync-panel">
+        <div><h2>Sinkronisasi online</h2><p className="muted">{!supabase ? "Belum dikonfigurasi. Tambahkan kredensial Supabase di environment Vercel." : onlineUser ? `Masuk sebagai ${userEmail}` : "Masuk atau buat akun untuk menyinkronkan tugas antarperangkat."}</p></div>
+        {!supabase ? <span className="pill">Mode lokal</span> : onlineUser ? <div className="inline-actions"><button className="btn secondary" disabled={syncing} onClick={syncNow}>{syncing ? "Menyinkronkan…" : "Sinkronkan sekarang"}</button><button className="btn ghost" onClick={signOut}>Keluar</button></div> :
+          <form className="auth-form" onSubmit={signIn}><input type="email" placeholder="Email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} required /><input type="password" placeholder="Kata sandi (min. 6 karakter)" value={authPassword} onChange={e => setAuthPassword(e.target.value)} minLength={6} required /><button className="btn primary" disabled={syncing}>{syncing ? "Memproses…" : "Masuk"}</button><button type="button" className="btn secondary" disabled={syncing} onClick={signUp}>Daftar</button></form>}
+      </section>
+
+      <section className="toolbar panel">
+        <div className="search-wrap"><span>⌕</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Cari judul, catatan, mapel, atau tautan…" /></div>
+        <select aria-label="Filter status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option value="all">Semua status</option>{statuses.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}</select>
+        <select aria-label="Filter prioritas" value={priorityFilter} onChange={e => setPriorityFilter(e.target.value)}><option value="all">Semua prioritas</option>{priorities.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select>
+        <select aria-label="Filter kategori" value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}><option value="all">Semua kategori</option>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select>
+        <select aria-label="Urutkan tugas" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="due">Tenggat terdekat</option><option value="priority">Prioritas</option><option value="created">Terbaru dibuat</option><option value="title">Nama A–Z</option></select>
+      </section>
+
+      <nav className="view-tabs" aria-label="Tampilan tugas">
+        <button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>☷ Daftar</button>
+        <button className={view === "board" ? "active" : ""} onClick={() => setView("board")}>▦ Papan</button>
+        <button className={view === "calendar" ? "active" : ""} onClick={() => setView("calendar")}>▦ Kalender</button>
+        <span className="muted">{filtered.length} tugas ditampilkan</span>
+      </nav>
+
+      {view === "list" && <section className="task-list">
+        {filtered.length === 0 ? <div className="empty panel"><div>🗂️</div><h3>Belum ada tugas yang cocok</h3><p className="muted">Tambahkan tugas baru atau ubah filter pencarian.</p><button className="btn primary" onClick={() => openEditor()}>＋ Buat tugas</button></div> :
+          filtered.map(t => <TaskCard key={t.id} task={t} onEdit={() => openEditor(t)} onDelete={() => deleteTask(t.id)} onStatus={status => updateTask(t.id, { status })} onSubtask={(subId, done) => updateTask(t.id, { subtasks: t.subtasks.map(s => s.id === subId ? { ...s, done } : s) })} onAttachment={file => void addAttachment(t.id, file)} supabase={supabase} userId={onlineUser?.id} notify={notify} />)}
+      </section>}
+
+      {view === "board" && <section className="board">
+        {statuses.map(s => <div className="board-column" key={s.value}><div className="column-heading"><h3>{s.label}</h3><span>{filtered.filter(t => t.status === s.value).length}</span></div>
+          {filtered.filter(t => t.status === s.value).map(t => <article className="board-card" key={t.id}><div className="card-top"><PriorityBadge priority={t.priority} /><span className="muted small">{t.category}</span></div><h4>{t.title}</h4>{t.subject && <p className="muted small">{t.subject}</p>}{t.dueDate && <p className={`due ${isOverdue(t) ? "overdue" : ""}`}>◷ {formatDate(t.dueDate)}</p>}<div className="board-actions"><select aria-label={`Ubah status ${t.title}`} value={t.status} onChange={e => updateTask(t.id, { status: e.target.value as Status })}>{statuses.map(x => <option key={x.value} value={x.value}>{x.label}</option>)}</select><button className="btn ghost" onClick={() => openEditor(t)}>Edit</button></div></article>)}
+          <button className="add-to-column" onClick={() => { const t = emptyTask(); t.status = s.value; setEditing(t); }}>＋ Tambah tugas</button>
+        </div>)}
+      </section>}
+
+      {view === "calendar" && <section className="panel calendar-panel"><div className="calendar-head"><button className="btn secondary" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>← Sebelumnya</button><h2>{monthLabel}</h2><button className="btn secondary" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>Berikutnya →</button></div><div className="calendar-grid">{["Sen","Sel","Rab","Kam","Jum","Sab","Min"].map(d => <div className="weekday" key={d}>{d}</div>)}{calendarCells.map((day, i) => { const key = day ? `${month.getFullYear()}-${String(month.getMonth()+1).padStart(2,"0")}-${String(day).padStart(2,"0")}` : ""; const dayTasks = filtered.filter(t => t.dueDate === key); return <div className={`calendar-day ${day ? "" : "blank"}`} key={`${key}-${i}`}><span className="day-number">{day || ""}</span>{dayTasks.map(t => <button className={`calendar-task ${t.status}`} key={t.id} title={t.title} onClick={() => openEditor(t)}>{t.title}</button>)}{day && <button className="calendar-add" aria-label={`Tambah tugas tanggal ${day}`} onClick={() => { const t = emptyTask(); t.dueDate = key; setEditing(t); }}>＋</button>}</div>; })}</div><p className="muted small">Klik tugas untuk mengedit, atau tanda ＋ untuk membuat tugas pada tanggal tersebut.</p></section>}
+
+      {editing && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setEditing(null); }}><section className="modal panel" role="dialog" aria-modal="true" aria-labelledby="editor-title"><div className="modal-head"><div><p className="eyebrow">DETAIL TUGAS</p><h2 id="editor-title">{tasks.some(t => t.id === editing.id) ? "Edit tugas" : "Tugas baru"}</h2></div><button className="btn ghost" onClick={() => setEditing(null)} aria-label="Tutup">✕</button></div>
+        <form onSubmit={saveTask} className="editor-form">
+          <label>Judul tugas *<input autoFocus value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })} required maxLength={160} placeholder="Contoh: Praktik konfigurasi VLAN" /></label>
+          <label>Deskripsi<textarea value={editing.description} onChange={e => setEditing({ ...editing, description: e.target.value })} rows={3} placeholder="Detail tugas atau instruksi…" /></label>
+          <div className="form-grid"><label>Status<select value={editing.status} onChange={e => setEditing({ ...editing, status: e.target.value as Status })}>{statuses.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}</select></label><label>Prioritas<select value={editing.priority} onChange={e => setEditing({ ...editing, priority: e.target.value as Priority })}>{priorities.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}</select></label><label>Kategori<input value={editing.category} onChange={e => setEditing({ ...editing, category: e.target.value })} placeholder="Sekolah / Pribadi / Proyek" /></label><label>Mata pelajaran / proyek<input value={editing.subject} onChange={e => setEditing({ ...editing, subject: e.target.value })} placeholder="TJKT, Matematika, NEXORA…" /></label><label>Tenggat<input type="date" value={editing.dueDate} onChange={e => setEditing({ ...editing, dueDate: e.target.value })} /></label><label>Nilai (opsional)<input value={editing.grade} onChange={e => setEditing({ ...editing, grade: e.target.value })} placeholder="Mis. 90 atau belum dinilai" /></label></div>
+          <div className="editor-section"><h3>Subtugas</h3><div className="inline-input"><input value={subtaskDraft} onChange={e => setSubtaskDraft(e.target.value)} placeholder="Tambah langkah kecil…" onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addSubtask(); } }} /><button type="button" className="btn secondary" onClick={addSubtask}>Tambah</button></div>{editing.subtasks.map(s => <div className="subtask-row" key={s.id}><input type="checkbox" checked={s.done} onChange={e => setEditing({ ...editing, subtasks: editing.subtasks.map(x => x.id === s.id ? { ...x, done: e.target.checked } : x) })} /><span className={s.done ? "completed" : ""}>{s.title}</span><button type="button" className="icon-button" onClick={() => setEditing({ ...editing, subtasks: editing.subtasks.filter(x => x.id !== s.id) })}>Hapus</button></div>)}</div>
+          <div className="editor-section"><h3>Tautan bernama</h3><div className="form-grid"><label>Nama tautan<input value={linkLabel} onChange={e => setLinkLabel(e.target.value)} placeholder="Materi, Google Drive…" /></label><label>URL<input value={linkUrl} onChange={e => setLinkUrl(e.target.value)} placeholder="https://…" /></label></div><button type="button" className="btn secondary" onClick={addLink}>＋ Tambah tautan</button>{editing.links.map(l => <div className="link-row" key={l.id}><div><strong>{l.label}</strong><p className="small muted break">{l.url}</p></div><button type="button" className="icon-button" onClick={() => setEditing({ ...editing, links: editing.links.filter(x => x.id !== l.id) })}>Hapus</button></div>)}</div>
+          <div className="editor-section"><h3>Catatan</h3><textarea rows={3} value={editing.notes} onChange={e => setEditing({ ...editing, notes: e.target.value })} placeholder="Catatan pengerjaan, ide, atau hasil…" /></div>
+          <div className="editor-section"><h3>Lampiran</h3><p className="muted small">Upload online tersedia setelah login Supabase; batas 10 MB per file.</p><label className="btn secondary file-button">Pilih file<input type="file" onChange={e => { const f = e.target.files?.[0]; if (f) { notify("Simpan tugas terlebih dahulu, lalu unggah lampiran dari kartu tugas."); } e.currentTarget.value = ""; }} /></label>{editing.attachments.map(a => <div className="link-row" key={a.id}><span>{a.name} <small className="muted">({Math.ceil(a.size/1024)} KB)</small></span><span className="small muted">Lampiran tersimpan</span></div>)}</div>
+          <div className="modal-actions"><button type="button" className="btn secondary" onClick={() => setEditing(null)}>Batal</button><button type="submit" className="btn primary">Simpan tugas</button></div>
+        </form>
+      </section></div>}
+      <footer className="footer"><span>Tugas Manager v3 · Data lokal otomatis tersimpan di browser ini.</span><span>Cadangkan data secara berkala melalui Ekspor JSON.</span></footer>
     </main>
   );
+}
+
+function PriorityBadge({ priority }: { priority: Priority }) {
+  return <span className={`priority-badge ${priority}`}>{priority === "high" ? "● Tinggi" : priority === "medium" ? "● Sedang" : "● Rendah"}</span>;
+}
+
+function TaskCard({ task, onEdit, onDelete, onStatus, onSubtask, onAttachment, supabase, userId, notify }: {
+  task: Task; onEdit: () => void; onDelete: () => void; onStatus: (s: Status) => void;
+  onSubtask: (id: string, done: boolean) => void; onAttachment: (f: File) => void;
+  supabase: SupabaseClient | null; userId?: string; notify: (s: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const completed = task.subtasks.filter(s => s.done).length;
+  const upload = async (file?: File) => {
+    if (!file) return;
+    if (!supabase || !userId) { notify("Login Supabase diperlukan untuk mengunggah lampiran online."); return; }
+    setUploading(true); onAttachment(file); setUploading(false);
+  };
+  const openAttachment = async (a: Attachment) => {
+    if (!supabase || !userId || !a.path) return;
+    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(a.path, 60);
+    if (error || !data?.signedUrl) { notify("Lampiran tidak dapat dibuka."); return; }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  };
+  return <article className={`task-card panel ${task.status === "done" ? "task-done" : ""}`}>
+    <div className="task-main"><div className="task-title-row"><button className="expand-button" onClick={() => setExpanded(v => !v)} aria-label="Buka detail">{expanded ? "▾" : "▸"}</button><h3>{task.title}</h3>{isOverdue(task) && <span className="tag overdue-tag">Terlambat</span>}{isSoon(task) && !isOverdue(task) && <span className="tag soon-tag">Segera</span>}</div>
+      {task.description && <p className="task-description">{task.description}</p>}
+      <div className="task-meta"><PriorityBadge priority={task.priority} /><span className="tag">{task.category}</span>{task.subject && <span className="tag">{task.subject}</span>}{task.dueDate && <span className={`due ${isOverdue(task) ? "overdue" : ""}`}>◷ {formatDate(task.dueDate)}</span>}</div>
+      {task.subtasks.length > 0 && <div className="subtask-progress"><span>Subtugas {completed}/{task.subtasks.length}</span><div className="progress"><i style={{ width: `${completed / task.subtasks.length * 100}%` }} /></div></div>}
+    </div>
+    <div className="task-actions"><select aria-label={`Status ${task.title}`} value={task.status} onChange={e => onStatus(e.target.value as Status)}>{statuses.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}</select><button className="btn secondary" onClick={onEdit}>Edit</button><button className="btn ghost danger-text" onClick={onDelete}>Hapus</button></div>
+    {expanded && <div className="task-details">
+      {task.notes && <div><h4>Catatan</h4><p className="preserve">{task.notes}</p></div>}
+      {task.grade && <p><strong>Nilai:</strong> {task.grade}</p>}
+      {task.subtasks.length > 0 && <div><h4>Subtugas</h4>{task.subtasks.map(s => <label className="subtask-row" key={s.id}><input type="checkbox" checked={s.done} onChange={e => onSubtask(s.id, e.target.checked)} /><span className={s.done ? "completed" : ""}>{s.title}</span></label>)}</div>}
+      {task.links.length > 0 && <div><h4>Tautan</h4><div className="detail-links">{task.links.map(l => <a key={l.id} href={l.url} target="_blank" rel="noopener noreferrer">{l.label} ↗</a>)}</div></div>}
+      <div><h4>Lampiran</h4>{task.attachments.map(a => <button className="attachment-link" key={a.id} onClick={() => void openAttachment(a)}>{a.name} ↗</button>)}<label className="btn secondary file-button">{uploading ? "Mengunggah…" : "＋ Unggah lampiran"}<input type="file" disabled={uploading} onChange={e => { void upload(e.target.files?.[0]); e.currentTarget.value = ""; }} /></label></div>
+    </div>}
+  </article>;
 }
